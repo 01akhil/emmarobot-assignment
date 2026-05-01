@@ -28,7 +28,7 @@ from google import genai
 init(autoreset=True)
 
 # --- Configuration ---
-# API/model/runtime settings used across all options.
+# API/model/runtime settings used across all options, kept hardcoded for the purpose of this assignment.
 API_KEY = "AIzaSyBgIHxVLy2Hjhliuf0ssEl-SDxM8SlBrQA" 
 CLIENT = genai.Client(api_key=API_KEY)
 pyautogui.FAILSAFE = False 
