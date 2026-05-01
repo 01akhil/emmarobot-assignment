@@ -224,7 +224,7 @@ def _generate_with_retries_single_model(contents, stream_label, model_name, retr
                 time.sleep(wait_s)
     raise last_error
 
-def generate_with_retries(contents, stream_label, retries=5, model=None):
+def generate_with_retries(contents, stream_label, retries=7, model=None):
     """Call Gemini with retries. If model is set, it overrides the default for stream_label.
 
     On 429 for Gemini 2.5 Flash or 3 Flash, the same model is not retried; we switch to
