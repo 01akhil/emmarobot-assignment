@@ -10,7 +10,7 @@ Screenshot + VLM automation script for:
 
 - Python 3.10+ (3.11 recommended)
 - Google GenAI access/API key (for the purpose of assignment , it is hard-coded, users can change it in case of rpd or rpm issues)
-- Desktop permissions for screen capture + mouse control in mac and windows will be asked , thus allow them
+- Desktop permissions for screen capture + mouse control in mac and windows will be asked , thus allow them.
 
 Python packages used:
 - `google-genai`
@@ -23,10 +23,7 @@ Python packages used:
 
 ### Windows
 
-1. Open PowerShell in project folder.
-2. (Recommended) create and activate virtual environment:
-   - `python -m venv .venv`
-   - `.venv\Scripts\Activate.ps1`
+1. Open main.py in vs code.(Make sure python is installed)
 3. Install dependencies:
    - `pip install google-genai pyautogui pillow colorama pygetwindow`
 4. Run:
@@ -34,12 +31,9 @@ Python packages used:
 
 ### macOS
 
-1. Open Terminal in project folder.
-2. (Recommended) create and activate virtual environment:
-   - `python3 -m venv .venv`
-   - `source .venv/bin/activate`
-3. Install dependencies:
-   - `pip install google-genai pyautogui pillow colorama`
+1. Open main.py in vs code.
+2. Install dependencies:
+   - `python3 -m pip install pyautogui pillow colorama google-genai`
 4. Grant permissions to Terminal/iTerm (and Python) in:
    - **System Settings -> Privacy & Security -> Accessibility**
    - **System Settings -> Privacy & Security -> Screen Recording**
@@ -59,7 +53,7 @@ The script currently defines API/model settings in `main.py`:
 
 - Keep the terminal visible but not covering the target app area.
 - Prompts should be specific and screen-grounded.
-- Outputs are saved per mode:
+- Outputs are saved per mode(in the folder where main.py is kept):
   - `optionA/`, `optionB/`, `optionC/`, `optionD/`
 
 ## Option D Caveat
