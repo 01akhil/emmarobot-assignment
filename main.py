@@ -774,7 +774,7 @@ def main():
         print(f"{Fore.CYAN}{Style.BRIGHT}2.Specific and detailed prompt helps VLM in not getting confused between similar elements{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{Style.BRIGHT}3.Most of the tasks do not have scroll functionality, thus give it instructions to work on the visible pixels.{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{Style.BRIGHT}4. Users are advised to keep this terminal along side  or on the main application in a small screen such that , it does not obstruct the view of the main application and let users see the logs in terminal about processing.{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{Style.BRIGHT}5. The terminal will minimize before taking screenshot, and comes back after that.If it doesnt, user can restore it manually. Users can checkout demo videos here https://drive.google.com/drive/folders/1NadI8j2AZd9NSA_7f3KQcnSYocrdp8WG?usp=sharing{Style.RESET_ALL} \n")
+        print(f"{Fore.CYAN}{Style.BRIGHT}5. The terminal will minimize before taking screenshot, and comes back after that. If it doesnt, user can restore it manually.  This script is designed to handle single monitor setup. Users can checkout demo videos here https://drive.google.com/drive/folders/1NadI8j2AZd9NSA_7f3KQcnSYocrdp8WG?usp=sharing{Style.RESET_ALL} \n")
 
         
         choice_menu = (
