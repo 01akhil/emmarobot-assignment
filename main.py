@@ -7,7 +7,7 @@
 # - scroll and collect table-like rows (Option D).
 # It relies on Gemini LLM/VLM calls, screenshot grounding (0-1000 box_2d),
 # mouse movement visualization, and structured output logging.
-#.env is hardcoded for the purpose of assignment, in production, it would be stored in a .env file.
+#api is hardcoded for the purpose of assignment, in production, it would be stored in a .env file.
 
 
 import os
