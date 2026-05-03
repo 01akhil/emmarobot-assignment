@@ -35,6 +35,7 @@ Python packages used:
 1. Open main.py in vs code.
 2. Install dependencies:
    - `python3 -m pip install pyautogui pillow colorama google-genai`
+3. Replace the gemini api key by your generated key in line 32 (API_KEY) of main.py   
 4. Grant permissions to Terminal/iTerm (and Python) in:
    - **System Settings -> Privacy & Security -> Accessibility**
    - **System Settings -> Privacy & Security -> Screen Recording**
