@@ -26,7 +26,8 @@ Python packages used:
 1. Open main.py in vs code.(Make sure python is installed)
 3. Install dependencies:
    - `pip install google-genai pyautogui pillow colorama pygetwindow`
-4. Run:
+4. Replace the gemini api key by your generated key in line 32 (API_KEY) of main.py
+5. Run:
    - `python main.py`
 
 ### macOS

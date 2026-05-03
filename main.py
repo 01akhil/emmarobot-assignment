@@ -28,9 +28,10 @@ from google import genai
 init(autoreset=True)
 
 # --- Configuration ---
-# API/model/runtime settings used across all options, kept hardcoded for the purpose of this assignment.
-API_KEY = "AIzaSyCpFCCaTmSHUck6JCs_dbk_TFq9FPyGhps" 
-CLIENT = genai.Client(api_key=API_KEY)
+# API/model/runtime settings used across all options, use your own api key here.
+API_KEY = ""
+# Created on startup by ensure_gemini_client() so missing keys get a prompt instead of failing mid-run.
+CLIENT = None
 pyautogui.FAILSAFE = False 
 LOG_FILE = "logs/conversation_history.json"
 LLM_PRIMARY_MODEL = "gemini-2.5-flash"
@@ -51,6 +52,43 @@ OPTION_DIRS = {
 # Persistent handle for the assistant terminal window.
 # Used so the script can minimize itself before screenshot capture.
 ASSISTANT_WINDOW_HANDLE = None
+
+
+def ensure_gemini_client():
+    """If API_KEY is empty, prompt once; build genai.Client. Returns False to exit without a traceback."""
+    global CLIENT, API_KEY
+    if CLIENT is not None:
+        return True
+
+    resolved = (API_KEY or "").strip() or (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not resolved:
+        print(
+            f"\n{Fore.YELLOW}{Style.BRIGHT}Gemini API key is not set.{Style.RESET_ALL}\n"
+            "Enter your key below, or set API_KEY in this file in the line 32 of main.py, "
+            "save, and run again.\n"
+        )
+        resolved = input(f"{Fore.BLUE}API key (paste here, or Enter to exit): {Style.RESET_ALL}").strip()
+
+    if not resolved:
+        print(
+            f"\n{Fore.YELLOW}No API key provided — exiting.{Style.RESET_ALL} "
+            "Set API_KEY in main.py (Configuration, ~line 32) or GEMINI_API_KEY, then run again.\n"
+        )
+        return False
+
+    API_KEY = resolved
+    try:
+        CLIENT = genai.Client(api_key=resolved)
+    except Exception as e:
+        msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        print(
+            f"\n{Fore.YELLOW}Could not initialize the Gemini client:{Style.RESET_ALL} {msg[:300]}\n"
+            "Check that your key is valid, then try again.\n"
+        )
+        return False
+
+    return True
+
 
 def ensure_option_dirs():
     # Create per-option output folders so saves never fail due to missing dirs.
@@ -762,9 +800,10 @@ def main():
     # - capture screenshot
     # - run mode-specific VLM logic
     # - save artifacts into option folders
+    if not ensure_gemini_client():
+        return
     get_assistant_handle()
     ensure_option_dirs()
-    
 
     while True:
         print(f"\n{Fore.CYAN}{Style.BRIGHT}=== Emma Robot Assignment ==={Style.RESET_ALL}")
