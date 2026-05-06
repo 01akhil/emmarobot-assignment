@@ -7,7 +7,7 @@
 # - scroll and collect table-like rows (Option D).
 # It relies on Gemini LLM/VLM calls, screenshot grounding (0-1000 box_2d),
 # mouse movement visualization, and structured output logging.
-#api is hardcoded for the purpose of assignment, in production, it would be stored in a .env file.
+
 
 
 import os
@@ -238,73 +238,51 @@ def _is_gemini_2_5_or_3_flash_model(model_name):
         return True
     return False
 
-def _generate_with_retries_single_model(contents, stream_label, model_name, retries=5):
-    """Up to `retries` attempts on the same model only (with backoff). Used after 429 fallback."""
-    last_error = None
-    for attempt in range(1, retries + 1):
-        try:
-            log_event(
-                "SYS",
-                f"{stream_label}: attempt {attempt}/{retries} (model={model_name})",
-            )
-            return CLIENT.models.generate_content(
-                model=model_name,
-                contents=contents,
-            )
-        except Exception as e:
-            last_error = e
-            err_text = str(e)
-            kind = classify_api_error(err_text)
-            log_event("SYS", f"{stream_label}: {friendly_error_message(kind, err_text)}")
-            if attempt < retries:
-                wait_s = extract_retry_seconds(err_text) or min(2 ** attempt, 10)
-                log_event("SYS", f"Retrying in {wait_s}s...")
-                time.sleep(wait_s)
-    raise last_error
-
 def generate_with_retries(contents, stream_label, retries=7, model=None):
     """Call Gemini with retries. If model is set, it overrides the default for stream_label.
 
     On 429 for Gemini 2.5 Flash or 3 Flash, the same model is not retried; we switch to
     RATE_LIMIT_FALLBACK_MODEL and run up to `retries` attempts on that model only.
     """
-    # Select explicit model if provided; otherwise use stream default.
-    base_model = model or get_primary_model(stream_label)
-
-    if not _is_gemini_2_5_or_3_flash_model(base_model):
-        return _generate_with_retries_single_model(
-            contents, stream_label, base_model, retries=retries,
-        )
-
+    active_model = model or get_primary_model(stream_label)
+    fallback_allowed = _is_gemini_2_5_or_3_flash_model(active_model)
     last_error = None
-    for attempt in range(1, retries + 1):
+    attempt = 1
+    while attempt <= retries:
         try:
             log_event(
                 "SYS",
-                f"{stream_label}: attempt {attempt}/{retries} (model={base_model})",
+                f"{stream_label}: attempt {attempt}/{retries} (model={active_model})",
             )
             return CLIENT.models.generate_content(
-                model=base_model,
+                model=active_model,
                 contents=contents,
             )
         except Exception as e:
             last_error = e
             err_text = str(e)
             kind = classify_api_error(err_text)
-            if kind == "429":
+
+            # Preserve existing behavior: on 429 for 2.5/3-flash primary models,
+            # do not retry the same model; switch once to fallback and restart attempts.
+            if kind == "429" and fallback_allowed:
                 log_event(
                     "SYS",
                     f"{stream_label}: 429 — You have 5 RPM and 20 RPD; these have been exhausted, "
                     f"thus falling back to {RATE_LIMIT_FALLBACK_MODEL} (up to {retries} attempts on that model).",
                 )
-                return _generate_with_retries_single_model(
-                    contents, stream_label, RATE_LIMIT_FALLBACK_MODEL, retries=retries,
-                )
+                active_model = RATE_LIMIT_FALLBACK_MODEL
+                fallback_allowed = False
+                # Start fresh retry budget on fallback model (matches previous behavior).
+                attempt = 1
+                continue
+
             log_event("SYS", f"{stream_label}: {friendly_error_message(kind, err_text)}")
             if attempt < retries:
                 wait_s = extract_retry_seconds(err_text) or min(2 ** attempt, 10)
                 log_event("SYS", f"Retrying in {wait_s}s...")
                 time.sleep(wait_s)
+            attempt += 1
     raise last_error
 
 def toggle_window(action="minimize"):
@@ -583,33 +561,37 @@ def parse_user_intent_d(user_goal):
     # - explicit count mode: "extract/get/fetch/collect N records"
     # - open-ended mode: continue until completion cues.
     goal = user_goal.lower()
-    count_match = re.search(
+    patterns = [
         r"\b(?:extract|get|fetch|collect)\s+(\d+)\s+(?:youtube\s+)?(?:comments?|records?|rows?|items?|entries?|results?)\b",
-        goal,
-    )
-    if count_match:
-        return {"mode": "COUNT_LIMIT", "limit": int(count_match.group(1))}
+        r"\b(?:first|top)\s+(\d+)\s+(?:comments?|records?|rows?|items?|entries?|results?)\b",
+        r"\b(?:comments?|records?|rows?|items?|entries?|results?)\s*(?:count|limit)?\s*(?:=|:|is)?\s*(\d+)\b",
+    ]
+    for pat in patterns:
+        count_match = re.search(pat, goal)
+        if count_match:
+            return {"mode": "COUNT_LIMIT", "limit": int(count_match.group(1))}
     return {"mode": "UNTIL_END", "limit": None}
 
+def extract_required_description_value(user_goal):
+    """Best-effort parse of literal value in prompts like 'description is snack'."""
+    m = re.search(
+        r"\bdescription\s*(?:=|is|:)\s*['\"]?([a-z0-9][a-z0-9 _-]{0,80})['\"]?\b",
+        user_goal.lower(),
+    )
+    if not m:
+        return None
+    value = re.split(r"\b(?:and|or|where|with|from|in)\b", m.group(1).strip())[0].strip()
+    return value or None
 
-def get_vlm_data_option_d(previous_screenshot, current_screenshot, user_prompt, collected_count):
-    intent = parse_user_intent_d(user_prompt)
-    # Option D prompt asks the VLM to do two jobs in one call:
-    # 1) extract records from the current frame, and
-    # 2) decide if previous vs current frame look identical for stop logic.
+
+def get_vlm_stop_cues_option_d(previous_screenshot, current_screenshot, user_prompt):
+    """VLM-1 for Option D: only compare previous/current frames for stop cues."""
     query = f"""
-Task: extract readable information from the screen.
+Task: compare two screenshots to decide if scrolling should continue.
 You are given two images in order: previous screenshot, then current screenshot.
-Use the current screenshot as the primary source for extraction; use the previous screenshot only for temporal context if needed.
-Also decide whether both frames are visually the same page state (same table content/viewport, ignoring tiny rendering noise).
-For extraction regions, return coherent extract units only:
-- in tables/grids, return complete row blocks (or coherent row-level cell groups), not tiny fragments;
-- in lists/cards/sections, return complete item or section blocks;
-- when target data repeats, extract all visible matching units in the current screenshot.
-Each "box_2d" must tightly cover the same visual unit described by its "extracted_text".
-User goal: {user_prompt}
-Already extracted unique records: {collected_count}
-Intent mode: {intent["mode"]}; limit: {intent["limit"] if intent["limit"] is not None else "N/A"}
+DO NOT extract table rows and DO NOT return any coordinates.
+Only evaluate stop/continue cues from visual evidence.
+User goal context: {user_prompt}
 
 Return JSON only:
 {{
@@ -619,16 +601,8 @@ Return JSON only:
     "frames_identical": true or false,
     "scroll_bar_at_end": true or false,
     "has_more_scrollable_content": true or false,
-    "empty_sheet_or_document": true or false,
-    "has_required_data_in_view": true or false
-  }},
-  "elements": [
-    {{
-      "name": "...",
-      "box_2d": [ymin, xmin, ymax, xmax],
-      "extracted_text": "..."
-    }}
-  ]
+    "empty_sheet_or_document": true or false
+  }}
 }}
 """
     data = get_vlm_response(
@@ -638,44 +612,48 @@ Return JSON only:
         model=VLM_OPTION_D_MODEL,
     )
     if data is None:
-        log_event("SYS", "Option D: no valid JSON from VLM for this iteration.")
+        log_event("SYS", "Option D: no valid JSON from stop-cue VLM call.")
     return data
 
 
-def refine_option_d_box_for_text(current_screenshot, user_goal, extracted_text, proposed_box):
-    """Run a focused grounding pass so box and extracted_text refer to the same row."""
-    if not extracted_text:
-        return proposed_box
+def get_vlm_extract_option_d(current_screenshot, user_prompt, collected_count, required_description_value=None):
+    """VLM-2 for Option D: extract only user-requested rows with precise coordinates."""
+    intent = parse_user_intent_d(user_prompt)
     query = f"""
-Task: locate the exact visual row/item on the CURRENT screenshot that matches this extracted row text.
-User goal: {user_goal}
-Target extracted_text (literal): {extracted_text}
-Proposed box_2d from previous pass: {proposed_box}
-
-Rules:
-- Match the literal row/item text first (date/amount/description/reference/status where visible).
-- Return one tight row-level/coherent item-level box_2d for that same row/item.
-- If uncertain, prefer the row containing the literal target text over nearby similar rows.
+Task: extract only records that satisfy the user's requested criteria from the CURRENT screenshot.
+STRICT requirement:
+- Return coordinates ONLY for matching records the user asked for.
+- Do NOT return non-matching rows.
+- If no row matches, return an empty list.
+- Coordinates must be tight row-level boxes for mouse movement and box drawing.
+User goal: {user_prompt}
+Already extracted unique records: {collected_count}
+Intent mode: {intent["mode"]}; limit: {intent["limit"] if intent["limit"] is not None else "N/A"}
+required_description_value (literal, optional): {json.dumps(required_description_value, ensure_ascii=False)}
 
 Return JSON only:
 {{
-  "box_2d": [ymin, xmin, ymax, xmax]
+  "summary": "...",
+  "reasoning": "why these are the matching records",
+  "elements": [
+    {{
+      "name": "...",
+      "required_match": true,
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "extracted_text": "..."
+    }}
+  ]
 }}
 """
     data = get_vlm_response(query, current_screenshot, log_raw=False, model=VLM_OPTION_D_MODEL)
-    if isinstance(data, dict):
-        b = data.get("box_2d")
-        if isinstance(b, (list, tuple)) and len(b) == 4:
-            try:
-                return list(map(float, b))
-            except Exception:
-                return proposed_box
-    return proposed_box
+    if data is None:
+        log_event("SYS", "Option D: no valid JSON from extract VLM call.")
+    return data
 
 
 def run_option_d(user_prompt):
     # Option D loop:
-    # capture -> ask VLM (previous+current) -> collect unique rows -> highlight/save -> scroll.
+    # capture -> VLM-1 stop cues (previous+current) -> VLM-2 extraction (current only) -> highlight/save -> scroll.
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_dir = OPTION_DIRS["d"]
     ensure_option_dirs()
@@ -683,12 +661,16 @@ def run_option_d(user_prompt):
 
     intent = parse_user_intent_d(user_prompt)
     limit = intent["limit"]
-    all_elements = []    # final deduplicated records to write into output TXT
-    seen_texts = set()   # dedupe key: extracted_text
+    log_event("SYS", f"Option D intent: mode={intent['mode']}, limit={limit if limit is not None else 'N/A'}")
+    required_desc_value = extract_required_description_value(user_prompt)
+    if required_desc_value:
+        log_event("SYS", f"Option D: strict description literal match enabled: '{required_desc_value}'.")
+    all_elements = []    # final collected records to write into output TXT
     previous_screenshot = None
     last_summary = "N/A"
     iteration = 0
     empty_view_streak = 0
+    identical_confirmation_pending = False
 
     while True:
         iteration += 1
@@ -700,44 +682,67 @@ def run_option_d(user_prompt):
         # On iteration 1, previous does not exist, so we duplicate current to keep
         # a consistent 2-image interface for the VLM.
         previous_for_vlm = previous_screenshot if previous_screenshot is not None else screenshot
-        # Send both frames each iteration so VLM can judge whether viewport changed.
-        data = get_vlm_data_option_d(previous_for_vlm, screenshot, user_prompt, len(all_elements))
-        if not data:
-            log_event("SYS", "Option D: stopping due to missing VLM data.")
+        # VLM-1: comparison-only call for stop cues.
+        stop_data = get_vlm_stop_cues_option_d(previous_for_vlm, screenshot, user_prompt)
+        if not stop_data:
+            log_event("SYS", "Option D: stopping due to missing stop-cue VLM data.")
             break
 
-        last_summary = data.get("summary", last_summary)
-        cues = data.get("visual_cues") or {}
-        log_event("VLM", f"Option D reasoning: {data.get('reasoning', 'No reasoning provided.')}; cues={json.dumps(cues)}")
+        last_summary = stop_data.get("summary", last_summary)
+        cues = stop_data.get("visual_cues") or {}
+        log_event("VLM", f"Option D stop-cue reasoning: {stop_data.get('reasoning', 'No reasoning provided.')}; cues={json.dumps(cues)}")
 
         # VLM decides whether previous and current frames are identical.
         # We ignore this cue on the first loop (no real previous frame yet).
         if previous_screenshot is not None and bool(cues.get("frames_identical")):
-            log_event("OUT", "Option D: completion criteria met (VLM says last two frames are identical).")
+            if identical_confirmation_pending:
+                log_event("OUT", "Option D: completion criteria met (frames still identical after confirmation scroll).")
+                break
+            log_event("SYS", "Option D: frames identical detected; skipping coordinates and scrolling once for confirmation.")
+            identical_confirmation_pending = True
+            previous_screenshot = screenshot
+            pyautogui.scroll(-600)
+            time.sleep(1.5)
+            continue
+        identical_confirmation_pending = False
+
+        # VLM-2: extraction-only call for matching records + coordinates.
+        extract_data = get_vlm_extract_option_d(
+            screenshot, user_prompt, len(all_elements), required_description_value=required_desc_value
+        )
+        if not extract_data:
+            log_event("SYS", "Option D: stopping due to missing extract VLM data.")
             break
+        log_event("VLM", f"Option D extract reasoning: {extract_data.get('reasoning', 'No reasoning provided.')}")
 
         boxes = []  # coordinates for visual highlight + optional PNG boxing
         added_this_iteration = 0
-        for el in data.get("elements", []):
+        elements = extract_data.get("elements", [])
+        for idx, el in enumerate(elements):
             txt = (el.get("extracted_text") or "").strip()
-            # De-duplicate by extracted text so repeated rows on nearby scrolls
-            # are not written multiple times.
-            if txt and txt not in seen_texts:
-                b = el.get("box_2d")
-                if isinstance(b, (list, tuple)) and len(b) == 4:
-                    b = list(map(float, b))
-                    # Second-pass grounding: enforce alignment between row text and box.
-                    refined_box = refine_option_d_box_for_text(screenshot, user_prompt, txt, b)
-                    el["box_2d"] = refined_box
-                    boxes.append(refined_box)
-                seen_texts.add(txt)
-                all_elements.append(el)
-                added_this_iteration += 1
-                if limit and len(all_elements) >= limit:
-                    log_event("OUT", f"Option D: reached requested limit of {limit}.")
-                    break
+            if not txt:
+                continue
+            # Strictly process only records that match the user's required criteria.
+            if not bool(el.get("required_match")):
+                continue
+            # Literal guard for prompts like "description is snack".
+            if required_desc_value and (required_desc_value not in txt.lower()):
+                continue
+            b = el.get("box_2d")
+            if isinstance(b, (list, tuple)) and len(b) == 4:
+                b = list(map(float, b))
+                el["box_2d"] = b
+                boxes.append(b)
+            else:
+                # Do not keep records without valid coordinates in Option D.
+                continue
+            all_elements.append(el)
+            added_this_iteration += 1
+            log_event("SYS", f"Option D counter: collected={len(all_elements)}{' / ' + str(limit) if limit else ''}")
+            if limit and len(all_elements) >= limit:
+                log_event("OUT", f"Option D: reached requested limit of {limit}.")
+                break
 
-        has_required_data = bool(cues.get("has_required_data_in_view"))
         is_empty_view = bool(cues.get("empty_sheet_or_document"))
         if is_empty_view:
             empty_view_streak += 1
@@ -751,7 +756,7 @@ def run_option_d(user_prompt):
         # User-requested behavior: when no new records are found, do not draw
         # or move across boxes; just continue the scroll loop.
         if added_this_iteration == 0:
-            log_event("SYS", "Option D: no new records in this view; skipping box draw/highlight and scrolling.")
+            log_event("SYS", "Option D: no required records in this view; skipping box draw/highlight and scrolling.")
         elif boxes:
             for idx, box in enumerate(boxes, 1):
                 log_event("ACT", f"Option D: highlighting record {idx}/{len(boxes)} — box_2d={box}")
@@ -759,7 +764,7 @@ def run_option_d(user_prompt):
                 time.sleep(0.35)
 
         # Don't save image when sheet/doc is empty or there is no required data in this view.
-        should_save_image = bool(boxes) and has_required_data and (added_this_iteration > 0)
+        should_save_image = bool(boxes) and (added_this_iteration > 0) and (not is_empty_view)
         if should_save_image:
             img = draw_red_boxes(screenshot, boxes)
             png_path = os.path.join(out_dir, f"extract_{stamp}_iter{iteration}.png")
@@ -781,7 +786,7 @@ def run_option_d(user_prompt):
         # Update previous frame before next scroll so the next iteration compares
         # the new screenshot against this one.
         previous_screenshot = screenshot
-        pyautogui.scroll(-800)
+        pyautogui.scroll(-500)
         time.sleep(1.5)
 
     # Final consolidated text output for all collected records.
@@ -1004,5 +1009,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
